@@ -1,45 +1,102 @@
-//! By convention, main.zig is where your main function lives in the case that
-//! you are building an executable. If you are making a library, the convention
-//! is to delete this file and start with root.zig instead.
+const std = @import("std");
+const json_rpc = @import("json_rpc.zig");
+
+pub const Logger = struct {
+    streams: std.ArrayList(std.fs.File),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) Logger {
+        return Logger{ .allocator = allocator, .streams = std.ArrayList(std.fs.File).init(allocator) };
+    }
+
+    pub fn deinit(self: @This()) void {
+        self.streams.deinit();
+    }
+
+    pub fn log(self: @This(), level: Level, msg: anytype) !void {
+        const to_print = switch (@TypeOf(msg)) {
+            []const u8,
+            []u8,
+            std.json.Value,
+            => msg,
+            else => try std.fmt.allocPrint(
+                self.allocator,
+                "{any}",
+                .{msg},
+            ),
+        };
+        // defer self.allocator.free(to_print);
+        for (self.streams.items) |stream| {
+            const message = try std.json.stringifyAlloc(
+                self.allocator,
+                .{
+                    .level = level,
+                    .timestamp = std.time.timestamp(),
+                    .msg = to_print,
+                },
+                .{},
+            );
+            defer self.allocator.free(message);
+            const msg_with_lf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
+            defer self.allocator.free(msg_with_lf);
+
+            try stream.writeAll(msg_with_lf);
+        }
+    }
+
+    pub const Level = enum { trace, info, debug, warning, err };
+};
 
 pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+    const stdin = std.io.getStdIn().reader();
+    const stdout = std.io.getStdOut().writer();
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+    var log_file = try std.fs.cwd().createFile("logs.txt", .{
+        .truncate = false,
+    });
+    defer log_file.close();
+    const stat = try log_file.stat();
+    try log_file.seekTo(stat.size);
 
-    try bw.flush(); // Don't forget to flush!
-}
+    var logger = Logger.init(allocator);
+    defer logger.deinit();
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+    try logger.streams.append(std.io.getStdErr());
+    try logger.streams.append(log_file);
 
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-}
+    while (true) {
+        const message = try stdin.readUntilDelimiterAlloc(
+            allocator,
+            '\n',
+            1024 * 1024,
+        );
+        defer allocator.free(message);
+        if (message.len > 0) {
+            const parsed = json_rpc.deserializeRequest(
+                allocator,
+                message,
+            ) catch {
+                try logger.log(.err, message);
+                continue;
+            };
+            defer parsed.deinit();
 
-test "fuzz example" {
-    const global = struct {
-        fn testOne(input: []const u8) anyerror!void {
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
+            const result = json_rpc.Result{ .jsonrpc = try allocator.dupe(u8, "2.0"), .result = .{ .string = "nothing to do here" } };
+            defer if (result.jsonrpc) |field| {
+                allocator.free(field);
+            };
+
+            try stdout.writeAll(
+                try json_rpc.serializeResponse(
+                    allocator,
+                    .{ .result = result },
+                ),
+            );
+
+            try logger.log(.info, parsed.value);
         }
-    };
-    try std.testing.fuzz(global.testOne, .{});
+    }
 }
-
-const std = @import("std");
-
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("mcp-zig_lib");

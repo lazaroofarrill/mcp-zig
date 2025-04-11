@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "zig-mcp": {
+      "command": "zig",
+      "args": [
+        "build",
+        "run"
+      ]
+    }
+  }
+}
