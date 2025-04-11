@@ -1,51 +1,6 @@
 const std = @import("std");
 const json_rpc = @import("json_rpc.zig");
-
-pub const Logger = struct {
-    streams: std.ArrayList(std.fs.File),
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator) Logger {
-        return Logger{ .allocator = allocator, .streams = std.ArrayList(std.fs.File).init(allocator) };
-    }
-
-    pub fn deinit(self: @This()) void {
-        self.streams.deinit();
-    }
-
-    pub fn log(self: @This(), level: Level, msg: anytype) !void {
-        const to_print = switch (@TypeOf(msg)) {
-            []const u8,
-            []u8,
-            std.json.Value,
-            => msg,
-            else => try std.fmt.allocPrint(
-                self.allocator,
-                "{any}",
-                .{msg},
-            ),
-        };
-        // defer self.allocator.free(to_print);
-        for (self.streams.items) |stream| {
-            const message = try std.json.stringifyAlloc(
-                self.allocator,
-                .{
-                    .level = level,
-                    .timestamp = std.time.timestamp(),
-                    .msg = to_print,
-                },
-                .{},
-            );
-            defer self.allocator.free(message);
-            const msg_with_lf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
-            defer self.allocator.free(msg_with_lf);
-
-            try stream.writeAll(msg_with_lf);
-        }
-    }
-
-    pub const Level = enum { trace, info, debug, warning, err };
-};
+const Logger = @import("logger.zig").Logger;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -61,12 +16,13 @@ pub fn main() !void {
     const stat = try log_file.stat();
     try log_file.seekTo(stat.size);
 
-    var logger = Logger.init(allocator);
+    var logger = Logger.initDefault(allocator);
     defer logger.deinit();
 
     try logger.streams.append(std.io.getStdErr());
     try logger.streams.append(log_file);
 
+    try logger.info("Starting MCP Server");
     while (true) {
         const message = try stdin.readUntilDelimiterAlloc(
             allocator,
@@ -79,7 +35,7 @@ pub fn main() !void {
                 allocator,
                 message,
             ) catch {
-                try logger.log(.err, message);
+                try logger.err(message);
                 continue;
             };
             defer parsed.deinit();
@@ -96,7 +52,7 @@ pub fn main() !void {
                 ),
             );
 
-            try logger.log(.info, parsed.value);
+            try logger.info(parsed.value);
         }
     }
 }

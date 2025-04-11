@@ -45,28 +45,28 @@ pub const Result = struct {
 
 pub const Error = struct {
     jsonrpc: ?[]u8,
-    errorValue: json.Value,
+    @"error": Value,
 
-    pub fn jsonStringify(value: @This(), jws: anytype) !void {
-        try jws.beginObject();
-        inline for (std.meta.fields(Error)) |field| {
-            const val = @field(value, field.name);
-            if (std.mem.eql(u8, field.name, "errorValue")) {
-                try jws.objectField("error");
-            } else {
-                try jws.objectField(field.name);
-            }
-            try jws.write(val);
-        }
-
-        try jws.endObject();
-    }
+    pub const Value = struct {
+        code: i64,
+        message: []const u8,
+        data: std.json.Value,
+    };
 };
 
 pub fn serializeResponse(
     allocator: std.mem.Allocator,
     response: union(enum) { result: Result, errorValue: Error },
 ) ![]u8 {
+    const jsonrpc_version = switch (response) {
+        .result => |v| v.jsonrpc,
+        .errorValue => |v| v.jsonrpc,
+    };
+    std.debug.assert(std.mem.eql(
+        u8,
+        jsonrpc_version orelse return error.InvalidJsonRpcVersion,
+        "2.0",
+    ));
     const stringified = switch (response) {
         .errorValue => |v| try json.stringifyAlloc(
             allocator,
@@ -79,7 +79,6 @@ pub fn serializeResponse(
             .{},
         ),
     };
-
     defer allocator.free(stringified);
 
     return std.fmt.allocPrint(allocator, "{s}\n", .{stringified});
@@ -140,8 +139,8 @@ test "deserialize request" {
     };
 }
 
-const jsonrpc_version = "2.0";
 test "serialize response" {
+    const jsonrpc_version = "2.0";
     const to_free = try std.testing.allocator.dupe(
         u8,
         jsonrpc_version,
@@ -162,32 +161,36 @@ test "serialize response" {
 }
 
 test "serialize error" {
-    var errorValue = json.ObjectMap.init(std.testing.allocator);
-    defer errorValue.deinit();
+    var error_value = json.ObjectMap.init(std.testing.allocator);
+    defer error_value.deinit();
 
-    try errorValue.put(
+    try error_value.put(
         "type",
         .{ .string = "text" },
     );
-    try errorValue.put(
+    try error_value.put(
         "text",
         .{ .string = "No one can draw like this." },
     );
 
-    const errorResponse = Error{
+    const error_response = Error{
         .jsonrpc = try std.testing.allocator.dupe(
             u8,
-            jsonrpc_version,
+            "2.0",
         ),
-        .errorValue = .{ .object = errorValue },
+        .@"error" = .{
+            .code = 1,
+            .message = "Some error I want to return.",
+            .data = .null,
+        },
     };
-    defer if (errorResponse.jsonrpc) |field| {
+    defer if (error_response.jsonrpc) |field| {
         std.testing.allocator.free(field);
     };
 
     const serialized_payload = try serializeResponse(
         std.testing.allocator,
-        .{ .errorValue = errorResponse },
+        .{ .errorValue = error_response },
     );
     defer std.testing.allocator.free(serialized_payload);
 
