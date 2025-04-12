@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const Logger = struct {
-    streams: std.ArrayList(std.fs.File),
+    streams: std.ArrayList(std.io.AnyWriter),
     allocator: std.mem.Allocator,
     level: Level,
 
@@ -14,7 +14,9 @@ pub const Logger = struct {
     pub fn initWithLevel(allocator: std.mem.Allocator, level: Level) Logger {
         return Logger{
             .allocator = allocator,
-            .streams = std.ArrayList(std.fs.File).init(allocator),
+            .streams = std.ArrayList(
+                std.io.AnyWriter,
+            ).init(allocator),
             .level = level,
         };
     }
@@ -89,20 +91,16 @@ pub const Logger = struct {
         };
 
         for (self.streams.items) |stream| {
-            const message = try std.json.stringifyAlloc(
-                self.allocator,
+            try std.json.stringify(
                 .{
                     .level = @intFromEnum(level),
                     .timestamp = std.time.milliTimestamp(),
                     .msg = to_print,
                 },
                 .{},
+                stream,
             );
-            defer self.allocator.free(message);
-            const msg_with_lf = try std.fmt.allocPrint(self.allocator, "{s}\n", .{message});
-            defer self.allocator.free(msg_with_lf);
-
-            try stream.writeAll(msg_with_lf);
+            try stream.writeAll("\n");
         }
     }
 

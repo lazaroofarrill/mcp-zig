@@ -1,6 +1,7 @@
 const std = @import("std");
 const json_rpc = @import("json_rpc.zig");
 const Logger = @import("logger.zig").Logger;
+const mcp = @import("mcp/server.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -19,13 +20,31 @@ pub fn main() !void {
     var logger = Logger.init(allocator);
     defer logger.deinit();
 
-    try logger.streams.append(std.io.getStdErr());
-    try logger.streams.append(log_file);
+    try logger.streams.append(
+        std.io.getStdErr().writer().any(),
+    );
+    try logger.streams.append(log_file.writer().any());
 
     try logger.info("Starting MCP Server");
 
     const request_buffer = try allocator.alloc(u8, 4 * 1024 * 1024);
     defer allocator.free(request_buffer);
+
+    var result_outputs = try std.ArrayList(
+        std.io.AnyWriter,
+    ).initCapacity(allocator, 3);
+    try result_outputs.append(stdout.any());
+    try result_outputs.appendSlice(logger.streams.items);
+
+    const transport = mcp.Transport{
+        .in = stdin.any(),
+        .out = stdout.any(),
+    };
+    const mcp_server = mcp.Server{
+        .transport = transport,
+        .logger = logger,
+    };
+
     while (true) {
         const message = stdin.readUntilDelimiter(
             request_buffer,
@@ -41,27 +60,28 @@ pub fn main() !void {
             }
         };
         if (message.len > 0) {
-            const req = json_rpc.deserializeRequest(
+            const requests = json_rpc.deserializeRequest(
                 allocator,
                 message,
             ) catch {
                 try logger.err(message);
                 continue;
             };
-            defer req.deinit();
-            try logger.info(req.value);
+            defer requests.deinit();
+            try logger.info(requests.value);
+            if (requests.value.len == 0) continue;
 
-            const result = json_rpc.Result{ .jsonrpc = try allocator.dupe(u8, "2.0"), .result = .{ .string = "nothing to do here" } };
-            defer if (result.jsonrpc) |field| {
-                allocator.free(field);
-            };
-
-            try stdout.writeAll(
-                try json_rpc.serializeResponse(
-                    allocator,
-                    .{ .result = result },
-                ),
-            );
+            for (requests.value) |req| {
+                const res = try mcp_server.handleRequest(
+                    req,
+                );
+                for (result_outputs.items) |stream| {
+                    try json_rpc.serializeResponse(
+                        res,
+                        stream,
+                    );
+                }
+            }
         }
     }
 }

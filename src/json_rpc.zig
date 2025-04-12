@@ -43,6 +43,7 @@ pub const Request = struct {
 };
 
 pub const Result = struct {
+    id: json.Value,
     jsonrpc: ?[]u8,
     result: json.Value,
 
@@ -50,8 +51,9 @@ pub const Result = struct {
 };
 
 pub const Error = struct {
+    id: json.Value,
     jsonrpc: ?[]u8,
-    error_value: Value,
+    err: Value,
 
     pub const Value = struct {
         code: i64,
@@ -78,7 +80,7 @@ pub const Error = struct {
             if (std.mem.eql(
                 u8,
                 field.name,
-                "error_value",
+                "err",
             )) {
                 try jws.objectField("error");
             } else {
@@ -90,35 +92,38 @@ pub const Error = struct {
     }
 };
 
+pub const Response = union(enum) {
+    result: Result,
+    err: Error,
+};
+
 pub fn serializeResponse(
-    allocator: std.mem.Allocator,
-    response: union(enum) { result: Result, errorValue: Error },
-) ![]u8 {
+    response: Response,
+    stream: std.io.AnyWriter,
+) !void {
     const jsonrpc_version = switch (response) {
         .result => |v| v.jsonrpc,
-        .errorValue => |v| v.jsonrpc,
+        .err => |v| v.jsonrpc,
     };
     std.debug.assert(std.mem.eql(
         u8,
         jsonrpc_version orelse return error.InvalidJsonRpcVersion,
         "2.0",
     ));
-    var list = std.ArrayList(u8).init(allocator);
     switch (response) {
-        .errorValue => |v| try json.stringify(
+        .err => |v| try json.stringify(
             v,
             .{},
-            list.writer(),
+            stream,
         ),
         .result => |v| try json.stringify(
             v,
             .{},
-            list.writer(),
+            stream,
         ),
     }
 
-    try list.append('\n');
-    return list.toOwnedSlice();
+    try stream.writeAll("\n");
 }
 
 pub fn deserializeRequest(
@@ -213,17 +218,21 @@ test "serialize response" {
     );
     defer std.testing.allocator.free(to_free);
     const response = Result{
+        .id = .null,
         .jsonrpc = to_free,
         .result = .null,
     };
 
-    const serialized_payload = try serializeResponse(
+    var result = std.ArrayList(u8).init(
         std.testing.allocator,
-        .{ .result = response },
     );
-    defer std.testing.allocator.free(serialized_payload);
+    defer result.deinit();
+    try serializeResponse(
+        .{ .result = response },
+        result.writer().any(),
+    );
 
-    std.debug.print("{s}", .{serialized_payload});
+    std.debug.print("{s}", .{result.items});
 }
 
 test "serialize error" {
@@ -244,7 +253,7 @@ test "serialize error" {
             u8,
             "2.0",
         ),
-        .error_value = .{
+        .err = .{
             .code = 1,
             .message = "Some error I want to return.",
             .data = .null,
