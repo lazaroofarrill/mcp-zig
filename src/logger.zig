@@ -11,7 +11,7 @@ pub const Logger = struct {
     pub const warning = logFn(.warning);
     pub const err = logFn(.err);
 
-    pub fn init(allocator: std.mem.Allocator, level: Level) Logger {
+    pub fn initWithLevel(allocator: std.mem.Allocator, level: Level) Logger {
         return Logger{
             .allocator = allocator,
             .streams = std.ArrayList(std.fs.File).init(allocator),
@@ -19,8 +19,8 @@ pub const Logger = struct {
         };
     }
 
-    pub fn initDefault(allocator: std.mem.Allocator) Logger {
-        return init(allocator, .info);
+    pub fn init(allocator: std.mem.Allocator) Logger {
+        return initWithLevel(allocator, .info);
     }
 
     pub fn deinit(self: @This()) void {

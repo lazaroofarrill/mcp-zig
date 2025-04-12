@@ -16,7 +16,7 @@ pub fn main() !void {
     const stat = try log_file.stat();
     try log_file.seekTo(stat.size);
 
-    var logger = Logger.initDefault(allocator);
+    var logger = Logger.init(allocator);
     defer logger.deinit();
 
     try logger.streams.append(std.io.getStdErr());
@@ -31,14 +31,15 @@ pub fn main() !void {
         );
         defer allocator.free(message);
         if (message.len > 0) {
-            const parsed = json_rpc.deserializeRequest(
+            const req = json_rpc.deserializeRequest(
                 allocator,
                 message,
             ) catch {
                 try logger.err(message);
                 continue;
             };
-            defer parsed.deinit();
+            defer req.deinit();
+            try logger.info(req.value);
 
             const result = json_rpc.Result{ .jsonrpc = try allocator.dupe(u8, "2.0"), .result = .{ .string = "nothing to do here" } };
             defer if (result.jsonrpc) |field| {
@@ -51,8 +52,6 @@ pub fn main() !void {
                     .{ .result = result },
                 ),
             );
-
-            try logger.info(parsed.value);
         }
     }
 }

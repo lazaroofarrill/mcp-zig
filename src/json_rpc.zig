@@ -1,5 +1,8 @@
 const std = @import("std");
 const json = std.json;
+const testing = std.testing;
+const ArrayList = std.ArrayList;
+const Managed = @import("managed.zig").Managed;
 
 pub const Request = struct {
     jsonrpc: ?[]u8,
@@ -45,13 +48,43 @@ pub const Result = struct {
 
 pub const Error = struct {
     jsonrpc: ?[]u8,
-    @"error": Value,
+    error_value: Value,
 
     pub const Value = struct {
         code: i64,
         message: []const u8,
         data: std.json.Value,
     };
+
+    pub const Code = enum(i64) {
+        parse_error = -32700,
+        invalid_request = -32600,
+        method_not_found = -32601,
+        invalid_params = -32602,
+        internal_error = -32603,
+    };
+
+    pub fn jsonStringify(
+        self: @This(),
+        jws: anytype,
+    ) !void {
+        try jws.beginObject();
+        const fields = std.meta.fields(Error);
+        inline for (fields) |field| {
+            const val = @field(self, field.name);
+            if (std.mem.eql(
+                u8,
+                field.name,
+                "error_value",
+            )) {
+                try jws.objectField("error");
+            } else {
+                try jws.objectField(field.name);
+            }
+            try jws.write(val);
+        }
+        try jws.endObject();
+    }
 };
 
 pub fn serializeResponse(
@@ -87,30 +120,60 @@ pub fn serializeResponse(
 pub fn deserializeRequest(
     allocator: std.mem.Allocator,
     payload: []const u8,
-) !json.Parsed(Request) {
-    const parsed = try json.parseFromSlice(
+) !Managed([]Request) {
+    const parsed_single = json.parseFromSlice(
         Request,
         allocator,
         payload,
         .{},
-    );
+    ) catch |err| switch (err) {
+        error.UnexpectedToken => |e| e,
+        else => return err,
+    };
 
-    const request = parsed.value;
+    const parsed_requests: Managed([]Request) = blk: {
+        if (parsed_single) |val| {
+            const arena_allocator = val.arena.allocator();
 
-    switch (request.id) {
-        .null, .integer, .string => {},
-        else => return error.InvalidRequestId,
+            var slice = try arena_allocator.alloc(Request, 1);
+            slice[0] = val.value;
+
+            break :blk .{
+                .value = slice,
+                .arena = val.arena,
+            };
+        } else |err| {
+            err catch {};
+            const parsed = try json.parseFromSlice(
+                []Request,
+                allocator,
+                payload,
+                .{},
+            );
+
+            break :blk .{
+                .value = parsed.value,
+                .arena = parsed.arena,
+            };
+        }
+    };
+
+    for (parsed_requests.value) |req| {
+        switch (req.id) {
+            .null, .integer, .string => {},
+            else => return error.InvalidRequestId,
+        }
+
+        switch (req.params) {
+            .object, .array => {},
+            else => return error.InvalidParams,
+        }
+
+        //only supporing JSON-RPC 2.0 for the time being
+        std.debug.assert(std.mem.eql(u8, req.jsonrpc.?, "2.0"));
     }
 
-    switch (request.params) {
-        .object, .array => {},
-        else => return error.InvalidParams,
-    }
-
-    //only supporing JSON-RPC 2.0 for the time being
-    std.debug.assert(std.mem.eql(u8, request.jsonrpc.?, "2.0"));
-
-    return parsed;
+    return parsed_requests;
 }
 
 const test_payloads = [_][]const u8{
@@ -120,7 +183,9 @@ const test_payloads = [_][]const u8{
 };
 
 test "deserialize request" {
-    var parsed_values = std.ArrayList(json.Parsed(Request)).init(std.testing.allocator);
+    var parsed_values = ArrayList(
+        Managed([]Request),
+    ).init(std.testing.allocator);
     defer parsed_values.deinit();
 
     inline for (test_payloads) |payload| {
@@ -129,9 +194,6 @@ test "deserialize request" {
             payload,
         );
         try parsed_values.append(parsed);
-
-        const request = parsed.value;
-        _ = request;
     }
 
     defer for (parsed_values.items) |val| {
@@ -178,7 +240,7 @@ test "serialize error" {
             u8,
             "2.0",
         ),
-        .@"error" = .{
+        .error_value = .{
             .code = 1,
             .message = "Some error I want to return.",
             .data = .null,
@@ -195,4 +257,13 @@ test "serialize error" {
     defer std.testing.allocator.free(serialized_payload);
 
     std.debug.print("{s}", .{serialized_payload});
+}
+
+test "batch_deserialize" {
+    const message =
+        \\[{"id": 2, "jsonrpc": "2.0", "params": [ "baby" ], "method": "give_me_data"}]
+    ;
+
+    const parsed = try deserializeRequest(std.testing.allocator, message);
+    defer parsed.deinit();
 }
