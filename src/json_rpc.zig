@@ -10,7 +10,10 @@ pub const Request = struct {
     params: json.Value,
     id: json.Value,
 
-    pub fn jsonStringify(self: @This(), jws: anytype) !void {
+    pub fn jsonStringify(
+        self: @This(),
+        jws: anytype,
+    ) !void {
         try jws.beginObject();
         inline for (std.meta.fields(@This())) |field| {
             const val = @field(self, field.name);
@@ -100,21 +103,22 @@ pub fn serializeResponse(
         jsonrpc_version orelse return error.InvalidJsonRpcVersion,
         "2.0",
     ));
-    const stringified = switch (response) {
-        .errorValue => |v| try json.stringifyAlloc(
-            allocator,
+    var list = std.ArrayList(u8).init(allocator);
+    switch (response) {
+        .errorValue => |v| try json.stringify(
             v,
             .{},
+            list.writer(),
         ),
-        .result => |v| try json.stringifyAlloc(
-            allocator,
+        .result => |v| try json.stringify(
             v,
             .{},
+            list.writer(),
         ),
-    };
-    defer allocator.free(stringified);
+    }
 
-    return std.fmt.allocPrint(allocator, "{s}\n", .{stringified});
+    try list.append('\n');
+    return list.toOwnedSlice();
 }
 
 pub fn deserializeRequest(
