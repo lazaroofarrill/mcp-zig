@@ -23,13 +23,23 @@ pub fn main() !void {
     try logger.streams.append(log_file);
 
     try logger.info("Starting MCP Server");
+
+    const request_buffer = try allocator.alloc(u8, 4 * 1024 * 1024);
+    defer allocator.free(request_buffer);
     while (true) {
-        const message = try stdin.readUntilDelimiterAlloc(
-            allocator,
+        const message = stdin.readUntilDelimiter(
+            request_buffer,
             '\n',
-            1024 * 1024,
-        );
-        defer allocator.free(message);
+        ) catch |err| {
+            switch (err) {
+                error.EndOfStream,
+                error.StreamTooLong,
+                => {
+                    continue;
+                },
+                else => |e| return e,
+            }
+        };
         if (message.len > 0) {
             const req = json_rpc.deserializeRequest(
                 allocator,
