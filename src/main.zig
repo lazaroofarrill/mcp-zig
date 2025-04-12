@@ -2,6 +2,7 @@ const std = @import("std");
 const json_rpc = @import("json_rpc.zig");
 const Logger = @import("logger.zig").Logger;
 const mcp = @import("mcp/server.zig");
+const Managed = @import("managed.zig").Managed;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -40,10 +41,10 @@ pub fn main() !void {
         .in = stdin.any(),
         .out = stdout.any(),
     };
-    const mcp_server = mcp.Server{
-        .transport = transport,
+    const mcp_server = try mcp.Server.init(allocator, .{
         .logger = logger,
-    };
+        .transport = transport,
+    });
 
     while (true) {
         const message = stdin.readUntilDelimiter(
@@ -71,13 +72,22 @@ pub fn main() !void {
             try logger.info(requests.value);
             if (requests.value.len == 0) continue;
 
-            for (requests.value) |req| {
-                const res = try mcp_server.handleRequest(
+            var responses = try allocator.alloc(
+                Managed(json_rpc.Response),
+                requests.value.len,
+            );
+            defer allocator.free(responses);
+            defer for (responses) |res| {
+                res.deinit();
+            };
+
+            for (requests.value, 0..) |req, idx| {
+                responses[idx] = try mcp_server.handleRequest(
                     req,
                 );
                 for (result_outputs.items) |stream| {
                     try json_rpc.serializeResponse(
-                        res,
+                        responses[idx].value,
                         stream,
                     );
                 }

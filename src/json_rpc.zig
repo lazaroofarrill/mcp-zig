@@ -249,6 +249,7 @@ test "serialize error" {
     );
 
     const error_response = Error{
+        .id = .{ .integer = 1 },
         .jsonrpc = try std.testing.allocator.dupe(
             u8,
             "2.0",
@@ -263,13 +264,21 @@ test "serialize error" {
         std.testing.allocator.free(field);
     };
 
-    const serialized_payload = try serializeResponse(
-        std.testing.allocator,
-        .{ .errorValue = error_response },
+    var serialized_payload = std.ArrayList(u8).init(
+        testing.allocator,
     );
-    defer std.testing.allocator.free(serialized_payload);
+    defer serialized_payload.deinit();
+    try serializeResponse(
+        .{ .err = error_response },
+        serialized_payload.writer().any(),
+    );
 
-    std.debug.print("{s}", .{serialized_payload});
+    const to_print = try serialized_payload.toOwnedSlice();
+    defer testing.allocator.free(to_print);
+
+    std.debug.print("{s}", .{
+        to_print,
+    });
 }
 
 test "batch_deserialize" {
