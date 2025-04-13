@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "zig-mcp": {
+    "zig_mcp": {
       "command": "zig",
       "args": [
         "build",

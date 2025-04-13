@@ -13,10 +13,51 @@ pub const Transport = struct {
     out: std.io.AnyWriter,
 };
 
+const Tool = struct {
+    name: []const u8,
+    description: []const u8,
+    handle: ToolHandle,
+};
+
+const ToolHandle = *const fn (
+    *std.heap.ArenaAllocator,
+    std.json.Value,
+) anyerror!ManagedResponse;
+
+pub fn defineTool(
+    comptime Params: type,
+    name: []const u8,
+    description: []const u8,
+    comptime handler: fn (
+        *std.heap.ArenaAllocator,
+        Params,
+    ) anyerror!ManagedResponse,
+) Tool {
+    return Tool{
+        .name = name,
+        .description = description,
+        .handle = struct {
+            fn call(
+                arena: *std.heap.ArenaAllocator,
+                input: std.json.Value,
+            ) anyerror!ManagedResponse {
+                const params = try std.json.parseFromValue(
+                    Params,
+                    arena.allocator(),
+                    input,
+                    .{},
+                );
+                return handler(arena, params.value);
+            }
+        }.call,
+    };
+}
+
 pub const Server = struct {
     transport: Transport,
     logger: Logger,
     allocator: std.mem.Allocator,
+    _tools: std.ArrayList(Tool),
 
     _handlers: HandlerMap,
 
@@ -42,6 +83,7 @@ pub const Server = struct {
             .logger = options.logger,
             .transport = options.transport,
             ._handlers = HandlerMap.init(allocator),
+            ._tools = std.ArrayList(Tool).init(allocator),
         };
         try self._handlers.put(
             "initialize",
@@ -62,6 +104,7 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: @This()) void {
+        self._tools.deinit();
         self._handlers.deinit();
     }
 
@@ -133,11 +176,63 @@ pub const Server = struct {
         } };
     }
 
+    fn errorInvalidParams(
+        self: @This(),
+        req: Request,
+        arena: *std.heap.ArenaAllocator,
+    ) ManagedResponse {
+        _ = self;
+
+        return .{ .arena = arena, .value = .{
+            .err = .{
+                .id = req.id,
+                .jsonrpc = req.jsonrpc,
+                .err = .{
+                    .code = -32602,
+                    .message = "Invalid params.",
+                    .data = .null,
+                },
+            },
+        } };
+    }
+
     fn handleCallTools(
         self: @This(),
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!ManagedResponse {
+        const tool_name =
+            req.params.object.get("name") orelse {
+                return self.errorInvalidParams(req, arena);
+            };
+        switch (tool_name) {
+            .string => {},
+            else => return self.errorInvalidParams(
+                req,
+                arena,
+            ),
+        }
+
+        try self.logger.info(tool_name.string);
+
+        for (self._tools.items) |tool| {
+            if (std.mem.eql(
+                u8,
+                tool.name,
+                tool_name.string,
+            )) {
+                const params = req.params.object.get("params");
+                const input = if (params) |val| val else .null;
+                return tool.handle(arena, input) catch |err| {
+                    err catch {};
+                    return self.errorInvalidParams(
+                        req,
+                        arena,
+                    );
+                };
+            }
+        }
+
         return self.errorNotImplemented(req, arena);
     }
 
@@ -148,26 +243,48 @@ pub const Server = struct {
     ) anyerror!ManagedResponse {
         const arena_allocator = arena.allocator();
         try self.logger.info("listing tools");
-        var resultObject = ObjectMap.init(
-            arena_allocator,
-        );
-
-        var hello_world_tool = ObjectMap.init(arena_allocator);
-
-        try hello_world_tool.put(
-            "name",
-            .{ .string = "hello_world" },
-        );
 
         var tools = std.ArrayList(
             std.json.Value,
         ).init(arena_allocator);
 
-        try tools.append(
-            std.json.Value{
-                .object = hello_world_tool,
-            },
+        var resultObject = ObjectMap.init(
+            arena_allocator,
         );
+
+        for (self._tools.items) |tool| {
+            var curr_tool = ObjectMap.init(arena_allocator);
+
+            try curr_tool.put(
+                "name",
+                .{ .string = tool.name },
+            );
+            try curr_tool.put(
+                "description",
+                .{ .string = tool.description },
+            );
+
+            var input_schema = ObjectMap.init(
+                arena_allocator,
+            );
+
+            try input_schema.put(
+                "type",
+                .{ .string = "object" },
+            );
+
+            try curr_tool.put(
+                "inputSchema",
+                .{ .object = input_schema },
+            );
+
+            try tools.append(
+                std.json.Value{
+                    .object = curr_tool,
+                },
+            );
+        }
+
         try resultObject.put("tools", .{
             .array = tools,
         });

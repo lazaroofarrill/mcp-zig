@@ -3,6 +3,7 @@ const json_rpc = @import("json_rpc.zig");
 const Logger = @import("logger.zig").Logger;
 const mcp = @import("mcp/server.zig");
 const Managed = @import("managed.zig").Managed;
+const ManagedResponse = Managed(json_rpc.Response);
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -41,10 +42,33 @@ pub fn main() !void {
         .in = stdin.any(),
         .out = stdout.any(),
     };
-    const mcp_server = try mcp.Server.init(allocator, .{
+
+    var mcp_server = try mcp.Server.init(allocator, .{
         .logger = logger,
         .transport = transport,
     });
+
+    const HelloParams = struct {
+        name: []const u8,
+    };
+
+    const Handler = struct {
+        fn handleHello(
+            arena: *std.heap.ArenaAllocator,
+            params: HelloParams,
+        ) !ManagedResponse {
+            _ = arena;
+            _ = params;
+            return error.NotImplemeted;
+        }
+    };
+
+    try mcp_server._tools.append(mcp.defineTool(
+        HelloParams,
+        "hello_world",
+        "this function takes a name parameter.\n",
+        Handler.handleHello,
+    ));
 
     while (true) {
         const message = stdin.readUntilDelimiter(
