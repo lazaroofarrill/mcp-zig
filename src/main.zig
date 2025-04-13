@@ -101,19 +101,17 @@ pub fn main() !void {
     ));
 
     while (true) {
-        const message = stdin.readUntilDelimiter(
+        const raw_message = stdin.readUntilDelimiter(
             request_buffer,
             '\n',
-        ) catch |err| {
-            switch (err) {
-                error.EndOfStream,
-                error.StreamTooLong,
-                => {
-                    continue;
-                },
-                else => |e| return e,
-            }
+        ) catch |err| switch (err) {
+            error.EndOfStream, error.StreamTooLong => {
+                continue;
+            },
+            else => return err,
         };
+        const message = std.mem.trimRight(u8, raw_message, "\r");
+
         if (message.len > 0) {
             const requests = json_rpc.deserializeRequests(
                 main_allocator,
@@ -128,24 +126,38 @@ pub fn main() !void {
             if (requests.value.len == 0) continue;
 
             var responses = try main_allocator.alloc(
-                Managed(json_rpc.Response),
+                ?ManagedResponse,
                 requests.value.len,
             );
             defer main_allocator.free(responses);
+            for (responses, 0..) |_, idx| {
+                responses[idx] = null;
+            }
             defer for (responses) |res| {
-                res.deinit();
+                if (res) |r| {
+                    r.deinit();
+                }
             };
 
             for (requests.value, 0..) |req, idx| {
-                responses[idx] = try mcp_server.handleRequest(
+                const resp = mcp_server.handleRequest(
                     req,
-                );
+                ) catch |err| switch (err) {
+                    else => |e| {
+                        try logger.err(@errorName(e));
+                        return e;
+                    },
+                };
+                if (resp == null) continue;
+
                 for (result_outputs.items) |stream| {
                     try json_rpc.serializeResponse(
-                        responses[idx].value,
+                        resp.?.value,
                         stream,
                     );
                 }
+
+                responses[idx] = resp;
             }
         }
     }

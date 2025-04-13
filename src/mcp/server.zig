@@ -8,6 +8,8 @@ const Request = jrpc.Request;
 const Response = jrpc.Response;
 const ManagedResponse = Managed(jrpc.Response);
 
+pub const Error = error{NoOp};
+
 pub const Transport = struct {
     in: std.io.AnyReader,
     out: std.io.AnyWriter,
@@ -66,7 +68,7 @@ pub const Server = struct {
         server: Server,
         req: Request,
         arena: *std.heap.ArenaAllocator,
-    ) anyerror!ManagedResponse;
+    ) anyerror!?ManagedResponse;
     const HandlerMap = std.StringHashMap(
         *const HandlerFn,
     );
@@ -97,6 +99,11 @@ pub const Server = struct {
             &handleCallTools,
         );
 
+        try self._handlers.put(
+            "notifications",
+            &handleNotification,
+        );
+
         return self;
     }
 
@@ -108,25 +115,32 @@ pub const Server = struct {
     pub fn handleRequest(
         self: Self,
         req: Request,
-    ) !ManagedResponse {
+    ) !?ManagedResponse {
         const arena = try self.allocator.create(
             std.heap.ArenaAllocator,
         );
-        errdefer self.allocator.destroy(arena);
+        errdefer {
+            arena.deinit();
+            self.allocator.destroy(arena);
+        }
+
         arena.* = std.heap.ArenaAllocator.init(
             self.allocator,
         );
 
-        if (self._handlers.get(req.method)) |handle| {
+        const key = if (std.mem.startsWith(u8, req.method, "notifications/")) "notifications"[0..] else req.method;
+
+        if (self._handlers.get(key)) |handle| {
             var res = try handle(self, req, arena);
-            switch (res.value) {
+            if (res) |r| switch (r.value) {
                 .result => {
-                    res.value.result.id = req.id;
+                    res.?.value.result.id = req.id;
                 },
                 .err => {
-                    res.value.err.id = req.id;
+                    res.?.value.err.id = req.id;
                 },
-            }
+            };
+
             return res;
         } else {
             return .{ .arena = arena, .value = .{ .err = .{
@@ -143,19 +157,63 @@ pub const Server = struct {
         }
     }
 
+    fn handleNotification(
+        self: @This(),
+        req: Request,
+        arena: *std.heap.ArenaAllocator,
+    ) anyerror!?ManagedResponse {
+        var it = std.mem.splitSequence(u8, req.method, "/");
+        _ = it.next();
+
+        const notification_name = if (it.index) |idx| req.method[idx..] else return Error.NoOp;
+
+        _ = self;
+        _ = arena;
+        _ = notification_name;
+        return null;
+    }
+
     fn handleInitialize(
         self: @This(),
         req: Request,
         arena: *std.heap.ArenaAllocator,
-    ) anyerror!ManagedResponse {
-        _ = self;
+    ) anyerror!?ManagedResponse {
+        var result = std.json.ObjectMap.init(arena.allocator());
+        try result.put(
+            "protocolVersion",
+            .{ .string = "2024-11-05" },
+        );
+
+        var capabilities = std.json.ObjectMap.init(arena.allocator());
+
+        if (self._tools.items.len > 0) {
+            const tools = std.json.ObjectMap.init(arena.allocator());
+            try capabilities.put("tools", .{ .object = tools });
+        }
+
+        try result.put(
+            "capabilities",
+            .{ .object = capabilities },
+        );
+
+        //TODO resources
+
+        //TODO prompts
+
+        //TODO completions
+
+        //TODO logging
+
+        //TODO experimental
 
         return .{
             .arena = arena,
             .value = .{ .result = .{
                 .id = req.id,
                 .jsonrpc = req.jsonrpc,
-                .result = .null,
+                .result = .{
+                    .object = result,
+                },
             } },
         };
     }
@@ -204,7 +262,7 @@ pub const Server = struct {
         self: @This(),
         req: Request,
         arena: *std.heap.ArenaAllocator,
-    ) anyerror!ManagedResponse {
+    ) anyerror!?ManagedResponse {
         const tool_name =
             req.params.object.get("name") orelse {
                 return self.errorInvalidParams(req, arena);
@@ -258,7 +316,7 @@ pub const Server = struct {
         self: @This(),
         req: Request,
         arena: *std.heap.ArenaAllocator,
-    ) anyerror!ManagedResponse {
+    ) anyerror!?ManagedResponse {
         const arena_allocator = arena.allocator();
 
         var tools = std.ArrayList(

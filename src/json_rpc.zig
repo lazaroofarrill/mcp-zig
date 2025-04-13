@@ -7,8 +7,8 @@ const Managed = @import("managed.zig").Managed;
 pub const Request = struct {
     jsonrpc: ?[]u8,
     method: []const u8,
-    params: json.Value,
-    id: json.Value,
+    params: json.Value = .null,
+    id: json.Value = .null,
 
     pub fn jsonStringify(
         self: @This(),
