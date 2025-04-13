@@ -242,9 +242,6 @@ pub const Server = struct {
                         },
                     };
                 } else |err| {
-                    std.debug.print("{s}\n", .{
-                        @errorName(err),
-                    });
                     err catch {};
                     return self.errorInvalidParams(
                         req,
