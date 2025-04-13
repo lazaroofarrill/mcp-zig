@@ -4,10 +4,15 @@ const Logger = @import("logger.zig").Logger;
 const mcp = @import("mcp/server.zig");
 const Managed = @import("managed.zig").Managed;
 const ManagedResponse = Managed(json_rpc.Response);
+const Response = json_rpc.Response;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    const main_allocator = gpa.allocator();
+    defer {
+        const deinit_status = gpa.deinit();
+        if (deinit_status == .leak) @panic("Memory LEAK");
+    }
 
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
@@ -19,7 +24,7 @@ pub fn main() !void {
     const stat = try log_file.stat();
     try log_file.seekTo(stat.size);
 
-    var logger = Logger.init(allocator);
+    var logger = Logger.init(main_allocator);
     defer logger.deinit();
 
     try logger.streams.append(
@@ -29,12 +34,12 @@ pub fn main() !void {
 
     try logger.info("Starting MCP Server");
 
-    const request_buffer = try allocator.alloc(u8, 4 * 1024 * 1024);
-    defer allocator.free(request_buffer);
+    const request_buffer = try main_allocator.alloc(u8, 4 * 1024 * 1024);
+    defer main_allocator.free(request_buffer);
 
     var result_outputs = try std.ArrayList(
         std.io.AnyWriter,
-    ).initCapacity(allocator, 3);
+    ).initCapacity(main_allocator, 3);
     try result_outputs.append(stdout.any());
     try result_outputs.appendSlice(logger.streams.items);
 
@@ -43,31 +48,56 @@ pub fn main() !void {
         .out = stdout.any(),
     };
 
-    var mcp_server = try mcp.Server.init(allocator, .{
-        .logger = logger,
-        .transport = transport,
-    });
+    var mcp_server = try mcp.Server.init(main_allocator, transport);
 
-    const HelloParams = struct {
-        name: []const u8,
-    };
+    const Hello = struct {
+        const Params = struct {
+            name: []const u8,
+        };
 
-    const Handler = struct {
-        fn handleHello(
-            arena: *std.heap.ArenaAllocator,
-            params: HelloParams,
-        ) !ManagedResponse {
-            _ = arena;
-            _ = params;
-            return error.NotImplemeted;
+        fn handle(
+            allocator: std.mem.Allocator,
+            params: Params,
+        ) !Response {
+            var content = try std.json.Array.initCapacity(
+                allocator,
+                1,
+            );
+            var hello_message = std.ArrayList(u8).init(
+                allocator,
+            );
+
+            try hello_message.writer().writeAll("Hello ");
+            try hello_message.writer().writeAll(params.name);
+            try hello_message.writer().writeAll("\nHow are youd doing?");
+
+            var content_item = std.json.ObjectMap.init(allocator);
+            try content_item.put("type", .{ .string = "text" });
+            try content_item.put(
+                "text",
+                .{ .string = hello_message.items },
+            );
+            try content.append(.{ .object = content_item });
+
+            var result = std.json.ObjectMap.init(allocator);
+            try result.put("content", .{ .array = content });
+
+            return .{ .result = json_rpc.Result.create(.{
+                .object = result,
+            }) };
         }
     };
 
     try mcp_server._tools.append(mcp.defineTool(
-        HelloParams,
+        Hello.Params,
         "hello_world",
-        "this function takes a name parameter.\n",
-        Handler.handleHello,
+        "Check the params.\n",
+        \\{
+        \\    "name": {"type": "string"},
+        \\    "age": {"type": "number", "optional": true}
+        \\}
+    ,
+        Hello.handle,
     ));
 
     while (true) {
@@ -85,22 +115,23 @@ pub fn main() !void {
             }
         };
         if (message.len > 0) {
-            const requests = json_rpc.deserializeRequest(
-                allocator,
+            const requests = json_rpc.deserializeRequests(
+                main_allocator,
                 message,
             ) catch {
                 try logger.err(message);
                 continue;
             };
+            try logger.info(message);
             defer requests.deinit();
             try logger.info(requests.value);
             if (requests.value.len == 0) continue;
 
-            var responses = try allocator.alloc(
+            var responses = try main_allocator.alloc(
                 Managed(json_rpc.Response),
                 requests.value.len,
             );
-            defer allocator.free(responses);
+            defer main_allocator.free(responses);
             defer for (responses) |res| {
                 res.deinit();
             };

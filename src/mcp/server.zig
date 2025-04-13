@@ -1,11 +1,11 @@
 const std = @import("std");
 const jrpc = @import("../json_rpc.zig");
-const Logger = @import("../logger.zig").Logger;
 const Managed = @import("../managed.zig").Managed;
 
 const ObjectMap = std.json.ObjectMap;
 const ArrayList = std.ArrayList;
 const Request = jrpc.Request;
+const Response = jrpc.Response;
 const ManagedResponse = Managed(jrpc.Response);
 
 pub const Transport = struct {
@@ -17,37 +17,40 @@ const Tool = struct {
     name: []const u8,
     description: []const u8,
     handle: ToolHandle,
+    input_schema: ?[]const u8,
 };
 
 const ToolHandle = *const fn (
-    *std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     std.json.Value,
-) anyerror!ManagedResponse;
+) anyerror!Response;
 
 pub fn defineTool(
     comptime Params: type,
     name: []const u8,
     description: []const u8,
+    input_schema: ?[]const u8,
     comptime handler: fn (
-        *std.heap.ArenaAllocator,
+        std.mem.Allocator,
         Params,
-    ) anyerror!ManagedResponse,
+    ) anyerror!Response,
 ) Tool {
     return Tool{
         .name = name,
         .description = description,
+        .input_schema = input_schema,
         .handle = struct {
             fn call(
-                arena: *std.heap.ArenaAllocator,
+                allocator: std.mem.Allocator,
                 input: std.json.Value,
-            ) anyerror!ManagedResponse {
+            ) anyerror!Response {
                 const params = try std.json.parseFromValue(
                     Params,
-                    arena.allocator(),
+                    allocator,
                     input,
-                    .{},
+                    .{ .ignore_unknown_fields = true },
                 );
-                return handler(arena, params.value);
+                return handler(allocator, params.value);
             }
         }.call,
     };
@@ -55,10 +58,8 @@ pub fn defineTool(
 
 pub const Server = struct {
     transport: Transport,
-    logger: Logger,
     allocator: std.mem.Allocator,
     _tools: std.ArrayList(Tool),
-
     _handlers: HandlerMap,
 
     const HandlerFn = fn (
@@ -73,15 +74,11 @@ pub const Server = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        options: struct {
-            logger: Logger,
-            transport: Transport,
-        },
+        transport: Transport,
     ) !Self {
         var self = Self{
             .allocator = allocator,
-            .logger = options.logger,
-            .transport = options.transport,
+            .transport = transport,
             ._handlers = HandlerMap.init(allocator),
             ._tools = std.ArrayList(Tool).init(allocator),
         };
@@ -120,8 +117,17 @@ pub const Server = struct {
             self.allocator,
         );
 
-        if (self._handlers.get(req.method)) |val| {
-            return val(self, req, arena);
+        if (self._handlers.get(req.method)) |handle| {
+            var res = try handle(self, req, arena);
+            switch (res.value) {
+                .result => {
+                    res.value.result.id = req.id;
+                },
+                .err => {
+                    res.value.err.id = req.id;
+                },
+            }
+            return res;
         } else {
             return .{ .arena = arena, .value = .{ .err = .{
                 .id = req.id,
@@ -142,9 +148,7 @@ pub const Server = struct {
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!ManagedResponse {
-        try self.logger.info(
-            "initialize called",
-        );
+        _ = self;
 
         return .{
             .arena = arena,
@@ -213,23 +217,40 @@ pub const Server = struct {
             ),
         }
 
-        try self.logger.info(tool_name.string);
-
         for (self._tools.items) |tool| {
             if (std.mem.eql(
                 u8,
                 tool.name,
                 tool_name.string,
             )) {
-                const params = req.params.object.get("params");
-                const input = if (params) |val| val else .null;
-                return tool.handle(arena, input) catch |err| {
+                const tool_args = req.params.object.get("arguments");
+                const input = if (tool_args) |val| val else .null;
+                if (tool.handle(arena.allocator(), input)) |val| {
+                    return .{
+                        .arena = arena,
+                        .value = switch (val) {
+                            .result => |r| .{ .result = .{
+                                .id = req.id,
+                                .jsonrpc = r.jsonrpc,
+                                .result = r.result,
+                            } },
+                            .err => |e| .{ .err = .{
+                                .id = req.id,
+                                .jsonrpc = e.jsonrpc,
+                                .err = e.err,
+                            } },
+                        },
+                    };
+                } else |err| {
+                    std.debug.print("{s}\n", .{
+                        @errorName(err),
+                    });
                     err catch {};
                     return self.errorInvalidParams(
                         req,
                         arena,
                     );
-                };
+                }
             }
         }
 
@@ -242,7 +263,6 @@ pub const Server = struct {
         arena: *std.heap.ArenaAllocator,
     ) anyerror!ManagedResponse {
         const arena_allocator = arena.allocator();
-        try self.logger.info("listing tools");
 
         var tools = std.ArrayList(
             std.json.Value,
@@ -272,6 +292,21 @@ pub const Server = struct {
                 "type",
                 .{ .string = "object" },
             );
+
+            if (tool.input_schema) |schema_string| {
+                const parsed = std.json.parseFromSlice(
+                    std.json.Value,
+                    arena_allocator,
+                    schema_string,
+                    .{},
+                ) catch |err| blk: {
+                    err catch {};
+                    break :blk null;
+                };
+                if (parsed) |p| {
+                    try input_schema.put("properties", p.value);
+                }
+            }
 
             try curr_tool.put(
                 "inputSchema",

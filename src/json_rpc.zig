@@ -42,18 +42,38 @@ pub const Request = struct {
     }
 };
 
+const json_rpc_version = "2.0";
+
 pub const Result = struct {
     id: json.Value,
-    jsonrpc: ?[]u8,
+    jsonrpc: ?[]const u8,
     result: json.Value,
 
-    pub const Content = struct {};
+    const Self = @This();
+
+    pub fn create(result: json.Value) Self {
+        return .{
+            .id = .null,
+            .jsonrpc = json_rpc_version[0..],
+            .result = result,
+        };
+    }
 };
 
 pub const Error = struct {
     id: json.Value,
-    jsonrpc: ?[]u8,
+    jsonrpc: ?[]const u8,
     err: Value,
+
+    const Self = @This();
+
+    pub fn create(err: Value) Self {
+        return .{
+            .id = .null,
+            .jsonrpc = json_rpc_version[0..],
+            .err = err,
+        };
+    }
 
     pub const Value = struct {
         code: i64,
@@ -126,7 +146,7 @@ pub fn serializeResponse(
     try stream.writeAll("\n");
 }
 
-pub fn deserializeRequest(
+pub fn deserializeRequests(
     allocator: std.mem.Allocator,
     payload: []const u8,
 ) !Managed([]Request) {
@@ -198,7 +218,7 @@ test "deserialize request" {
     defer parsed_values.deinit();
 
     inline for (test_payloads) |payload| {
-        const parsed = try deserializeRequest(
+        const parsed = try deserializeRequests(
             std.testing.allocator,
             payload,
         );
@@ -286,6 +306,6 @@ test "batch_deserialize" {
         \\[{"id": 2, "jsonrpc": "2.0", "params": [ "baby" ], "method": "give_me_data"}]
     ;
 
-    const parsed = try deserializeRequest(std.testing.allocator, message);
+    const parsed = try deserializeRequests(std.testing.allocator, message);
     defer parsed.deinit();
 }
