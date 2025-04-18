@@ -191,11 +191,6 @@ pub const Server = struct {
             try capabilities.put("tools", .{ .object = tools });
         }
 
-        try result.put(
-            "capabilities",
-            .{ .object = capabilities },
-        );
-
         //TODO resources
 
         //TODO prompts
@@ -205,6 +200,11 @@ pub const Server = struct {
         //TODO logging
 
         //TODO experimental
+
+        try result.put(
+            "capabilities",
+            .{ .object = capabilities },
+        );
 
         return .{
             .arena = arena,
