@@ -5,6 +5,13 @@ const mcp = @import("mcp/server.zig");
 const Managed = @import("managed.zig").Managed;
 const ManagedResponse = Managed(json_rpc.Response);
 const Response = json_rpc.Response;
+const builtin = @import("builtin");
+
+const use_log_file = switch (builtin.target.os.tag) {
+    .linux => true,
+    .macos => true,
+    else => false,
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -17,20 +24,25 @@ pub fn main() !void {
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
-    var log_file = try std.fs.cwd().createFile("logs.txt", .{
-        .truncate = false,
-    });
-    defer log_file.close();
-    const stat = try log_file.stat();
-    try log_file.seekTo(stat.size);
-
     var logger = Logger.init(main_allocator);
     defer logger.deinit();
 
     try logger.streams.append(
         std.io.getStdErr().writer().any(),
     );
-    try logger.streams.append(log_file.writer().any());
+
+    const log_file: ?std.fs.File = if (use_log_file) try std.fs.cwd().createFile("logs.txt", .{
+        .truncate = false,
+    }) else null;
+    defer if (log_file) |f| {
+        f.close();
+    };
+
+    if (log_file) |f| {
+        const stat = try f.stat();
+        try f.seekTo(stat.size);
+        try logger.streams.append(f.writer().any());
+    }
 
     try logger.info("Starting MCP Server");
 
@@ -116,7 +128,8 @@ pub fn main() !void {
             const requests = json_rpc.deserializeRequests(
                 main_allocator,
                 message,
-            ) catch {
+            ) catch |err| {
+                try logger.err(@errorName(err));
                 try logger.err(message);
                 continue;
             };

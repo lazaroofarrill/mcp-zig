@@ -8,8 +8,6 @@ const Request = jrpc.Request;
 const Response = jrpc.Response;
 const ManagedResponse = Managed(jrpc.Response);
 
-pub const Error = error{NoOp};
-
 pub const Transport = struct {
     in: std.io.AnyReader,
     out: std.io.AnyWriter,
@@ -148,7 +146,7 @@ pub const Server = struct {
                 .jsonrpc = req.jsonrpc,
                 .err = .{
                     .code = @intFromEnum(
-                        jrpc.Error.Code.method_not_found,
+                        jrpc.ErrorResult.Code.method_not_found,
                     ),
                     .message = "Method not found"[0..],
                     .data = .null,
@@ -165,7 +163,7 @@ pub const Server = struct {
         var it = std.mem.splitSequence(u8, req.method, "/");
         _ = it.next();
 
-        const notification_name = if (it.index) |idx| req.method[idx..] else return Error.NoOp;
+        const notification_name = if (it.index) |idx| req.method[idx..] else return null;
 
         _ = self;
         _ = arena;
@@ -178,11 +176,17 @@ pub const Server = struct {
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!?ManagedResponse {
-        var result = std.json.ObjectMap.init(arena.allocator());
-        try result.put(
+        var initialize_result = std.json.ObjectMap.init(arena.allocator());
+        try initialize_result.put(
             "protocolVersion",
             .{ .string = "2024-11-05" },
         );
+
+        var server_info = std.json.ObjectMap.init(arena.allocator());
+        try server_info.put("name", .{ .string = "mcp-server-written-in-zig" });
+        try server_info.put("version", .{ .string = "0.0.1" });
+
+        try initialize_result.put("serverInfo", .{ .object = server_info });
 
         var capabilities = std.json.ObjectMap.init(arena.allocator());
 
@@ -201,7 +205,7 @@ pub const Server = struct {
 
         //TODO experimental
 
-        try result.put(
+        try initialize_result.put(
             "capabilities",
             .{ .object = capabilities },
         );
@@ -212,7 +216,7 @@ pub const Server = struct {
                 .id = req.id,
                 .jsonrpc = req.jsonrpc,
                 .result = .{
-                    .object = result,
+                    .object = initialize_result,
                 },
             } },
         };
@@ -300,7 +304,7 @@ pub const Server = struct {
                         },
                     };
                 } else |err| {
-                    err catch {};
+                    std.debug.print("{s}\n", .{@errorName(err)});
                     return self.errorInvalidParams(
                         req,
                         arena,

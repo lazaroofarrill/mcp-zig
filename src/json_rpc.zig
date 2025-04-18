@@ -60,7 +60,7 @@ pub const Result = struct {
     }
 };
 
-pub const Error = struct {
+pub const ErrorResult = struct {
     id: json.Value,
     jsonrpc: ?[]const u8,
     err: Value,
@@ -94,7 +94,7 @@ pub const Error = struct {
         jws: anytype,
     ) !void {
         try jws.beginObject();
-        const fields = std.meta.fields(Error);
+        const fields = std.meta.fields(ErrorResult);
         inline for (fields) |field| {
             const val = @field(self, field.name);
             if (std.mem.eql(
@@ -114,7 +114,7 @@ pub const Error = struct {
 
 pub const Response = union(enum) {
     result: Result,
-    err: Error,
+    err: ErrorResult,
 };
 
 pub fn serializeResponse(
@@ -194,7 +194,7 @@ pub fn deserializeRequests(
         }
 
         switch (req.params) {
-            .object, .array => {},
+            .null, .object, .array => {},
             else => return error.InvalidParams,
         }
 
@@ -205,13 +205,14 @@ pub fn deserializeRequests(
     return parsed_requests;
 }
 
-const test_payloads = [_][]const u8{
-    \\{"id": 2, "jsonrpc": "2.0", "params": [ "baby" ], "method": "give_me_data"}
-    ,
-    \\{"id": null, "jsonrpc": "2.0", "params": {}, "method": "my_my"}
-};
-
+// Tests
 test "deserialize request" {
+    const test_payloads = [_][]const u8{
+        \\{"id": 2, "jsonrpc": "2.0", "params": [ "baby" ], "method": "give_me_data"}
+        ,
+        \\{"id": null, "jsonrpc": "2.0", "params": {}, "method": "my_my"}
+    };
+
     var parsed_values = ArrayList(
         Managed([]Request),
     ).init(std.testing.allocator);
@@ -268,7 +269,7 @@ test "serialize error" {
         .{ .string = "No one can draw like this." },
     );
 
-    const error_response = Error{
+    const error_response = ErrorResult{
         .id = .{ .integer = 1 },
         .jsonrpc = try std.testing.allocator.dupe(
             u8,
@@ -308,4 +309,15 @@ test "batch_deserialize" {
 
     const parsed = try deserializeRequests(std.testing.allocator, message);
     defer parsed.deinit();
+}
+
+test "deserialize request with no params" {
+    const message =
+        \\{"method": "test_method", "id": 1, "jsonrpc": "2.0"}
+    ;
+
+    const parsed = try deserializeRequests(testing.allocator, message);
+    defer parsed.deinit();
+
+    try testing.expectEqual(parsed.value[0].params, .null);
 }
