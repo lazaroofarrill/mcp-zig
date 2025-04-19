@@ -85,10 +85,7 @@ pub fn main() !void {
 
             var content_item = std.json.ObjectMap.init(allocator);
             try content_item.put("type", .{ .string = "text" });
-            try content_item.put(
-                "text",
-                .{ .string = hello_message.items },
-            );
+            try content_item.put("text", .{ .string = hello_message.items });
             try content.append(.{ .object = content_item });
 
             var result = std.json.ObjectMap.init(allocator);
@@ -100,7 +97,7 @@ pub fn main() !void {
         }
     };
 
-    try mcp_server._tools.append(mcp.defineTool(
+    try mcp_server.defineTool(
         Hello.Params,
         "hello_world",
         "Check the params.\n",
@@ -110,7 +107,7 @@ pub fn main() !void {
         \\}
     ,
         Hello.handle,
-    ));
+    );
 
     while (true) {
         const raw_message = stdin.readUntilDelimiter(

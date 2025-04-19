@@ -25,37 +25,6 @@ const ToolHandle = *const fn (
     std.json.Value,
 ) anyerror!Response;
 
-pub fn defineTool(
-    comptime Params: type,
-    name: []const u8,
-    description: []const u8,
-    input_schema: ?[]const u8,
-    comptime handler: fn (
-        std.mem.Allocator,
-        Params,
-    ) anyerror!Response,
-) Tool {
-    return Tool{
-        .name = name,
-        .description = description,
-        .input_schema = input_schema,
-        .handle = struct {
-            fn call(
-                allocator: std.mem.Allocator,
-                input: std.json.Value,
-            ) anyerror!Response {
-                const params = try std.json.parseFromValue(
-                    Params,
-                    allocator,
-                    input,
-                    .{ .ignore_unknown_fields = true },
-                );
-                return handler(allocator, params.value);
-            }
-        }.call,
-    };
-}
-
 pub const Server = struct {
     transport: Transport,
     allocator: std.mem.Allocator,
@@ -71,6 +40,40 @@ pub const Server = struct {
         *const HandlerFn,
     );
     const Self = @This();
+
+    pub fn defineTool(
+        server: *Self,
+        comptime Params: type,
+        name: []const u8,
+        description: []const u8,
+        input_schema: ?[]const u8,
+        comptime handler: fn (
+            std.mem.Allocator,
+            Params,
+        ) anyerror!Response,
+    ) !void {
+        const tool = Tool{
+            .name = name,
+            .description = description,
+            .input_schema = input_schema,
+            .handle = struct {
+                fn call(
+                    allocator: std.mem.Allocator,
+                    input: std.json.Value,
+                ) anyerror!Response {
+                    const params = try std.json.parseFromValue(
+                        Params,
+                        allocator,
+                        input,
+                        .{ .ignore_unknown_fields = true },
+                    );
+                    return handler(allocator, params.value);
+                }
+            }.call,
+        };
+
+        try server._tools.append(tool);
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
