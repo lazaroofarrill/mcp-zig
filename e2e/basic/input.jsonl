@@ -1,0 +1,2 @@
+{"id": 1, "jsonrpc": "2.0", "method": "initialize", "params": {"capabilities": {}}}
+{"id": 2, "jsonrpc": "2.0", "method": "tools/call", "params": {"name": "hello_world", "arguments": {"name": "Gina"}}}

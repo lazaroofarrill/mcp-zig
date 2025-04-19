@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mcp = @import("mcp");
-
 const Logger = mcp.Logger.Logger;
 
 const use_log_file = switch (builtin.target.os.tag) {
@@ -43,18 +42,13 @@ pub fn main() !void {
 
     try logger.info("Starting MCP Server");
 
-    var result_outputs = try std.ArrayList(
-        std.io.AnyWriter,
-    ).initCapacity(main_allocator, 3);
-    try result_outputs.append(stdout.any());
-    try result_outputs.appendSlice(logger.streams.items);
-
     const transport = mcp.transport.Transport{
         .in = stdin.any(),
         .out = stdout.any(),
     };
 
     var mcp_server = try mcp.server.Server.init(main_allocator, transport);
+    defer mcp_server.deinit();
 
     const Hello = struct {
         const Params = struct {
@@ -110,5 +104,5 @@ pub fn main() !void {
     const app_context: AppContext = .{
         .logger = logger,
     };
-    try mcp_server.listen(AppContext, &app_context);
+    try mcp_server.start(AppContext, &app_context);
 }

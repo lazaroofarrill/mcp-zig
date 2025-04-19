@@ -106,14 +106,14 @@ pub const Server = struct {
         return self;
     }
 
-    pub fn deinit(self: @This()) void {
+    pub fn deinit(self: *Self) void {
         self._tools.deinit();
         self._handlers.deinit();
     }
 
     // Start server blocking the current thread.
     // ctx: Must be an struct containing an mcp.Logger object.
-    pub fn listen(self: Self, comptime T: type, ctx: *const T) anyerror!void {
+    pub fn start(self: Self, comptime T: type, ctx: *const T) anyerror!void {
         comptime {
             const Tctx = @typeInfo(@TypeOf(ctx));
             std.debug.assert(Tctx == .pointer);
@@ -133,19 +133,29 @@ pub const Server = struct {
         var result_outputs = try std.ArrayList(
             std.io.AnyWriter,
         ).initCapacity(self.allocator, 3);
+        defer result_outputs.deinit();
         try result_outputs.append(self.transport.out);
         try result_outputs.appendSlice(logger.streams.items);
 
+        var stop = false;
         while (true) {
-            const raw_message = self.transport.in.readUntilDelimiter(
-                request_buffer,
+            var fbs = std.io.fixedBufferStream(request_buffer);
+            self.transport.in.streamUntilDelimiter(
+                fbs.writer(),
                 '\n',
+                fbs.buffer.len,
             ) catch |err| switch (err) {
-                error.EndOfStream, error.StreamTooLong => {
+                error.EndOfStream => {
+                    stop = true;
+                },
+                error.StreamTooLong => {
                     continue;
                 },
                 else => return err,
             };
+
+            const raw_message = fbs.getWritten();
+
             const message = std.mem.trimRight(u8, raw_message, "\r");
 
             if (message.len > 0) {
@@ -153,7 +163,7 @@ pub const Server = struct {
                     self.allocator,
                     message,
                 ) catch |err| {
-                    try logger.err(@errorName(err));
+                    err catch {};
                     try logger.err(message);
                     continue;
                 };
@@ -196,6 +206,10 @@ pub const Server = struct {
 
                     responses[idx] = resp;
                 }
+            }
+
+            if (stop) {
+                return;
             }
         }
     }
