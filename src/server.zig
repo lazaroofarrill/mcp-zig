@@ -30,7 +30,7 @@ pub const Server = struct {
     _handlers: HandlerMap,
 
     const HandlerFn = fn (
-        server: Server,
+        server: *Server,
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!?ManagedResponse;
@@ -113,32 +113,33 @@ pub const Server = struct {
 
     // Start server blocking the current thread.
     // ctx: Must be an struct containing an mcp.Logger object.
-    pub fn start(self: Self, comptime T: type, ctx: *const T) anyerror!void {
-        comptime {
-            const Tctx = @typeInfo(@TypeOf(ctx));
-            std.debug.assert(Tctx == .pointer);
-            const ContextChild = Tctx.pointer.child;
-            const ContextChildInfo = @typeInfo(ContextChild);
-            std.debug.assert(ContextChildInfo == .@"struct");
-            std.debug.assert(@hasField(ContextChild, "logger"));
-
-            const fieldType = @TypeOf(@field(ctx.*, "logger"));
-            std.debug.assert(fieldType == Logger);
-        }
-        const logger: Logger = @field(ctx.*, "logger");
+    pub fn start(self: *Self, comptime T: type, ctx: *const T) anyerror!void {
+        const logger: Logger = ctx.*.logger;
 
         const request_buffer = try self.allocator.alloc(u8, 4 * 1024 * 1024);
         defer self.allocator.free(request_buffer);
 
-        var result_outputs = try std.ArrayList(
-            std.io.AnyWriter,
-        ).initCapacity(self.allocator, 3);
-        defer result_outputs.deinit();
-        try result_outputs.append(self.transport.out);
-        try result_outputs.appendSlice(logger.streams.items);
+        // var result_outputs = try std.ArrayList(
+        //     std.io.AnyWriter,
+        // ).initCapacity(self.allocator, 3);
+        // defer result_outputs.deinit();
+        // try result_outputs.append(
+        //     self.transport.writer().any(),
+        // );
+        // try result_outputs.appendSlice(logger.streams.items);
+        //
 
-        var stop = false;
-        while (true) {
+        //TODO fix this memory leak
+        // var threads = std.ArrayList(std.Thread).init(
+        //     self.allocator,
+        // );
+        // defer threads.deinit();
+        // defer for (threads.items) |t| {
+        //     t.join();
+        // };
+
+        var run = true;
+        while (run) {
             var fbs = std.io.fixedBufferStream(request_buffer);
             self.transport.in.streamUntilDelimiter(
                 fbs.writer(),
@@ -146,7 +147,7 @@ pub const Server = struct {
                 fbs.buffer.len,
             ) catch |err| switch (err) {
                 error.EndOfStream => {
-                    stop = true;
+                    run = false;
                 },
                 error.StreamTooLong => {
                     continue;
@@ -172,50 +173,29 @@ pub const Server = struct {
                 try logger.info(requests.value);
                 if (requests.value.len == 0) continue;
 
-                var responses = try self.allocator.alloc(
-                    ?ManagedResponse,
+                const threads = try self.allocator.alloc(
+                    std.Thread,
                     requests.value.len,
                 );
-                defer self.allocator.free(responses);
-                for (responses, 0..) |_, idx| {
-                    responses[idx] = null;
-                }
-                defer for (responses) |res| {
-                    if (res) |r| {
-                        r.deinit();
-                    }
+                defer self.allocator.free(threads);
+                defer for (threads) |t| {
+                    t.join();
                 };
 
                 for (requests.value, 0..) |req, idx| {
-                    const resp = self.handleRequest(
-                        req,
-                    ) catch |err| switch (err) {
-                        else => |e| {
-                            try logger.err(@errorName(e));
-                            return e;
-                        },
-                    };
-                    if (resp == null) continue;
-
-                    for (result_outputs.items) |stream| {
-                        try jrpc.serializeResponse(
-                            resp.?.value,
-                            stream,
-                        );
-                    }
-
-                    responses[idx] = resp;
+                    const thread = try std.Thread.spawn(
+                        .{},
+                        processRequestInThread,
+                        .{ self, T, ctx, req },
+                    );
+                    threads[idx] = thread;
                 }
-            }
-
-            if (stop) {
-                return;
             }
         }
     }
 
     pub fn handleRequest(
-        self: Self,
+        self: *Self,
         req: Request,
     ) !?ManagedResponse {
         const arena = try self.allocator.create(
@@ -260,7 +240,7 @@ pub const Server = struct {
     }
 
     fn handleNotification(
-        self: @This(),
+        self: *Server,
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!?ManagedResponse {
@@ -276,7 +256,7 @@ pub const Server = struct {
     }
 
     fn handleInitialize(
-        self: @This(),
+        self: *Server,
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!?ManagedResponse {
@@ -367,7 +347,7 @@ pub const Server = struct {
     }
 
     fn handleCallTools(
-        self: @This(),
+        self: *Server,
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!?ManagedResponse {
@@ -421,7 +401,7 @@ pub const Server = struct {
     }
 
     fn handleListTools(
-        self: @This(),
+        self: *Server,
         req: Request,
         arena: *std.heap.ArenaAllocator,
     ) anyerror!?ManagedResponse {
@@ -501,3 +481,29 @@ pub const Server = struct {
         };
     }
 };
+
+pub fn processRequestInThread(
+    self: *Server,
+    comptime T: type,
+    ctx: *const T,
+    req: Request,
+) anyerror!void {
+    const logger: Logger = ctx.*.logger;
+    const resp = self.handleRequest(
+        req,
+    ) catch |err| switch (err) {
+        else => |e| {
+            try logger.err(@errorName(e));
+            return e;
+        },
+    };
+    if (resp == null) return;
+    defer if (resp) |r| {
+        r.deinit();
+    };
+
+    try jrpc.serializeResponse(
+        resp.?.value,
+        self.transport.writer().any(),
+    );
+}

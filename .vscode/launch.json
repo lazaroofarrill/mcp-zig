@@ -3,6 +3,15 @@
     "configurations": [
         {
             "type": "lldb-dap",
+            "request": "launch",
+            "name": "Launch",
+            "program": "${workspaceRoot}/zig-out/bin/hello_tool",
+            "args": ["<", "${workspaceRoot}/e2e/basic/input.jsonl"],
+            "env": [],
+            "cwd": "${workspaceRoot}"
+        },
+        {
+            "type": "lldb-dap",
             "request": "attach",
             "name": "Attach",
             "pid": "<PUT_PID_HERE>",

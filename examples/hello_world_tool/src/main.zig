@@ -79,6 +79,8 @@ pub fn main() !void {
             var result = std.json.ObjectMap.init(allocator);
             try result.put("content", .{ .array = content });
 
+            std.time.sleep(5 * std.time.ns_per_s);
+
             return .{ .result = mcp.json_rpc.Result.create(.{
                 .object = result,
             }) };
