@@ -1,11 +1,8 @@
 const std = @import("std");
-const json_rpc = @import("json_rpc.zig");
-const Logger = @import("logger.zig").Logger;
-const mcp = @import("mcp/server.zig");
-const Managed = @import("managed.zig").Managed;
-const ManagedResponse = Managed(json_rpc.Response);
-const Response = json_rpc.Response;
 const builtin = @import("builtin");
+const mcp = @import("mcp");
+
+const Logger = mcp.Logger.Logger;
 
 const use_log_file = switch (builtin.target.os.tag) {
     .linux => true,
@@ -52,12 +49,12 @@ pub fn main() !void {
     try result_outputs.append(stdout.any());
     try result_outputs.appendSlice(logger.streams.items);
 
-    const transport = mcp.Transport{
+    const transport = mcp.transport.Transport{
         .in = stdin.any(),
         .out = stdout.any(),
     };
 
-    var mcp_server = try mcp.Server.init(main_allocator, transport);
+    var mcp_server = try mcp.server.Server.init(main_allocator, transport);
 
     const Hello = struct {
         const Params = struct {
@@ -67,7 +64,7 @@ pub fn main() !void {
         fn handle(
             allocator: std.mem.Allocator,
             params: Params,
-        ) !Response {
+        ) !mcp.json_rpc.Response {
             var content = try std.json.Array.initCapacity(
                 allocator,
                 1,
@@ -88,7 +85,7 @@ pub fn main() !void {
             var result = std.json.ObjectMap.init(allocator);
             try result.put("content", .{ .array = content });
 
-            return .{ .result = json_rpc.Result.create(.{
+            return .{ .result = mcp.json_rpc.Result.create(.{
                 .object = result,
             }) };
         }

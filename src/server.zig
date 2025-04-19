@@ -1,27 +1,15 @@
 const std = @import("std");
-const jrpc = @import("../json_rpc.zig");
-const Managed = @import("../managed.zig").Managed;
-const Logger = @import("../logger.zig").Logger;
-
 const ObjectMap = std.json.ObjectMap;
 const ArrayList = std.ArrayList;
+const Transport = @import("transport.zig");
+
+const jrpc = @import("json_rpc.zig");
 const Request = jrpc.Request;
 const Response = jrpc.Response;
+const Logger = @import("logger.zig").Logger;
+const Managed = @import("managed.zig").Managed;
+
 const ManagedResponse = Managed(jrpc.Response);
-
-pub const Transport = struct {
-    in: std.io.AnyReader,
-    out: std.io.AnyWriter,
-
-    mutex: std.Thread.Mutex = std.Thread.Mutex{},
-
-    pub fn writeThreadSafe(self: @This(), data: []const u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-
-        try self.out.writeAll(data);
-    }
-};
 
 const Tool = struct {
     name: []const u8,
@@ -123,6 +111,8 @@ pub const Server = struct {
         self._handlers.deinit();
     }
 
+    // Start server blocking the current thread.
+    // ctx: Must be an struct containing an mcp.Logger object.
     pub fn listen(self: Self, comptime T: type, ctx: *const T) anyerror!void {
         comptime {
             const Tctx = @typeInfo(@TypeOf(ctx));

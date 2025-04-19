@@ -1,4 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+const dbg = builtin.mode == .Debug;
 
 pub const Logger = @This();
 
@@ -23,7 +26,8 @@ pub fn initWithLevel(allocator: std.mem.Allocator, level: Level) Logger {
 }
 
 pub fn init(allocator: std.mem.Allocator) Logger {
-    return initWithLevel(allocator, .info);
+    const level: Level = if (dbg) .debug else .info;
+    return initWithLevel(allocator, level);
 }
 
 pub fn deinit(self: @This()) void {
@@ -39,6 +43,8 @@ fn logFn(level: Level) fn (self: Logger, msg: anytype) error{LogError}!void {
 }
 
 pub fn log(self: @This(), level: Level, msg: anytype) !void {
+    if (@intFromEnum(level) < @intFromEnum(self.level)) return;
+
     var print_allocated_memory = false;
     const msg_type = @TypeOf(msg);
     const msg_type_info = @typeInfo(msg_type);
@@ -111,4 +117,5 @@ pub const Level = enum(u8) {
     info = 30,
     warning = 40,
     err = 50,
+    disabled = 255,
 };
