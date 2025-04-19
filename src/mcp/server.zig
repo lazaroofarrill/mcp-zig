@@ -1,6 +1,7 @@
 const std = @import("std");
 const jrpc = @import("../json_rpc.zig");
 const Managed = @import("../managed.zig").Managed;
+const Logger = @import("../logger.zig").Logger;
 
 const ObjectMap = std.json.ObjectMap;
 const ArrayList = std.ArrayList;
@@ -11,6 +12,15 @@ const ManagedResponse = Managed(jrpc.Response);
 pub const Transport = struct {
     in: std.io.AnyReader,
     out: std.io.AnyWriter,
+
+    mutex: std.Thread.Mutex = std.Thread.Mutex{},
+
+    pub fn writeThreadSafe(self: @This(), data: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        try self.out.writeAll(data);
+    }
 };
 
 const Tool = struct {
@@ -111,6 +121,93 @@ pub const Server = struct {
     pub fn deinit(self: @This()) void {
         self._tools.deinit();
         self._handlers.deinit();
+    }
+
+    pub fn listen(self: Self, comptime T: type, ctx: *const T) anyerror!void {
+        comptime {
+            const Tctx = @typeInfo(@TypeOf(ctx));
+            std.debug.assert(Tctx == .pointer);
+            const ContextChild = Tctx.pointer.child;
+            const ContextChildInfo = @typeInfo(ContextChild);
+            std.debug.assert(ContextChildInfo == .@"struct");
+            std.debug.assert(@hasField(ContextChild, "logger"));
+
+            const fieldType = @TypeOf(@field(ctx.*, "logger"));
+            std.debug.assert(fieldType == Logger);
+        }
+        const logger: Logger = @field(ctx.*, "logger");
+
+        const request_buffer = try self.allocator.alloc(u8, 4 * 1024 * 1024);
+        defer self.allocator.free(request_buffer);
+
+        var result_outputs = try std.ArrayList(
+            std.io.AnyWriter,
+        ).initCapacity(self.allocator, 3);
+        try result_outputs.append(self.transport.out);
+        try result_outputs.appendSlice(logger.streams.items);
+
+        while (true) {
+            const raw_message = self.transport.in.readUntilDelimiter(
+                request_buffer,
+                '\n',
+            ) catch |err| switch (err) {
+                error.EndOfStream, error.StreamTooLong => {
+                    continue;
+                },
+                else => return err,
+            };
+            const message = std.mem.trimRight(u8, raw_message, "\r");
+
+            if (message.len > 0) {
+                const requests = jrpc.deserializeRequests(
+                    self.allocator,
+                    message,
+                ) catch |err| {
+                    try logger.err(@errorName(err));
+                    try logger.err(message);
+                    continue;
+                };
+                try logger.info(message);
+                defer requests.deinit();
+                try logger.info(requests.value);
+                if (requests.value.len == 0) continue;
+
+                var responses = try self.allocator.alloc(
+                    ?ManagedResponse,
+                    requests.value.len,
+                );
+                defer self.allocator.free(responses);
+                for (responses, 0..) |_, idx| {
+                    responses[idx] = null;
+                }
+                defer for (responses) |res| {
+                    if (res) |r| {
+                        r.deinit();
+                    }
+                };
+
+                for (requests.value, 0..) |req, idx| {
+                    const resp = self.handleRequest(
+                        req,
+                    ) catch |err| switch (err) {
+                        else => |e| {
+                            try logger.err(@errorName(e));
+                            return e;
+                        },
+                    };
+                    if (resp == null) continue;
+
+                    for (result_outputs.items) |stream| {
+                        try jrpc.serializeResponse(
+                            resp.?.value,
+                            stream,
+                        );
+                    }
+
+                    responses[idx] = resp;
+                }
+            }
+        }
     }
 
     pub fn handleRequest(

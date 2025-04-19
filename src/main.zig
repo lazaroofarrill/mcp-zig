@@ -46,9 +46,6 @@ pub fn main() !void {
 
     try logger.info("Starting MCP Server");
 
-    const request_buffer = try main_allocator.alloc(u8, 4 * 1024 * 1024);
-    defer main_allocator.free(request_buffer);
-
     var result_outputs = try std.ArrayList(
         std.io.AnyWriter,
     ).initCapacity(main_allocator, 3);
@@ -109,66 +106,12 @@ pub fn main() !void {
         Hello.handle,
     );
 
-    while (true) {
-        const raw_message = stdin.readUntilDelimiter(
-            request_buffer,
-            '\n',
-        ) catch |err| switch (err) {
-            error.EndOfStream, error.StreamTooLong => {
-                continue;
-            },
-            else => return err,
-        };
-        const message = std.mem.trimRight(u8, raw_message, "\r");
+    const AppContext = struct {
+        logger: Logger,
+    };
 
-        if (message.len > 0) {
-            const requests = json_rpc.deserializeRequests(
-                main_allocator,
-                message,
-            ) catch |err| {
-                try logger.err(@errorName(err));
-                try logger.err(message);
-                continue;
-            };
-            try logger.info(message);
-            defer requests.deinit();
-            try logger.info(requests.value);
-            if (requests.value.len == 0) continue;
-
-            var responses = try main_allocator.alloc(
-                ?ManagedResponse,
-                requests.value.len,
-            );
-            defer main_allocator.free(responses);
-            for (responses, 0..) |_, idx| {
-                responses[idx] = null;
-            }
-            defer for (responses) |res| {
-                if (res) |r| {
-                    r.deinit();
-                }
-            };
-
-            for (requests.value, 0..) |req, idx| {
-                const resp = mcp_server.handleRequest(
-                    req,
-                ) catch |err| switch (err) {
-                    else => |e| {
-                        try logger.err(@errorName(e));
-                        return e;
-                    },
-                };
-                if (resp == null) continue;
-
-                for (result_outputs.items) |stream| {
-                    try json_rpc.serializeResponse(
-                        resp.?.value,
-                        stream,
-                    );
-                }
-
-                responses[idx] = resp;
-            }
-        }
-    }
+    const app_context: AppContext = .{
+        .logger = logger,
+    };
+    try mcp_server.listen(AppContext, &app_context);
 }
