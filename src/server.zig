@@ -6,7 +6,6 @@ const Transport = @import("transport.zig");
 const jrpc = @import("json_rpc.zig");
 const Request = jrpc.Request;
 const Response = jrpc.Response;
-const Logger = @import("logger.zig").Logger;
 const Managed = @import("managed.zig").Managed;
 
 const ManagedResponse = Managed(jrpc.Response);
@@ -16,9 +15,11 @@ const Tool = struct {
     description: []const u8,
     handle: ToolHandle,
     input_schema: ?[]const u8,
+    ctx: *anyopaque,
 };
 
 const ToolHandle = *const fn (
+    ctx: *anyopaque,
     allocator: std.mem.Allocator,
     std.json.Value,
 ) anyerror!Response;
@@ -41,11 +42,14 @@ pub const Server = struct {
 
     pub fn defineTool(
         server: *Self,
+        comptime C: type,
+        ctx: *C,
         comptime Params: type,
         name: []const u8,
         description: []const u8,
         input_schema: ?[]const u8,
         comptime handler: fn (
+            ctx: *C,
             std.mem.Allocator,
             Params,
         ) anyerror!Response,
@@ -54,8 +58,10 @@ pub const Server = struct {
             .name = name,
             .description = description,
             .input_schema = input_schema,
+            .ctx = ctx,
             .handle = struct {
                 fn call(
+                    callback_ctx: *anyopaque,
                     allocator: std.mem.Allocator,
                     input: std.json.Value,
                 ) anyerror!Response {
@@ -65,7 +71,11 @@ pub const Server = struct {
                         input,
                         .{ .ignore_unknown_fields = true },
                     );
-                    return handler(allocator, params.value);
+                    return handler(
+                        @ptrCast(@alignCast(callback_ctx)),
+                        allocator,
+                        params.value,
+                    );
                 }
             }.call,
         };
@@ -112,34 +122,23 @@ pub const Server = struct {
     }
 
     // Start server blocking the current thread.
-    // ctx: Must be an struct containing an mcp.Logger object.
-    pub fn start(self: *Self, comptime T: type, ctx: *const T) anyerror!void {
-        const logger: Logger = ctx.*.logger;
-
-        const request_buffer = try self.allocator.alloc(u8, 4 * 1024 * 1024);
+    pub fn start(self: *Self) anyerror!void {
+        const request_buffer = try self.allocator.alloc(
+            u8,
+            4 * 1024 * 1024,
+        );
         defer self.allocator.free(request_buffer);
 
-        // var result_outputs = try std.ArrayList(
-        //     std.io.AnyWriter,
-        // ).initCapacity(self.allocator, 3);
-        // defer result_outputs.deinit();
-        // try result_outputs.append(
-        //     self.transport.writer().any(),
-        // );
-        // try result_outputs.appendSlice(logger.streams.items);
-        //
+        // TODO fix this memory leak
+        var threads = std.ArrayList(std.Thread).init(
+            self.allocator,
+        );
+        defer threads.deinit();
+        defer for (threads.items) |t| {
+            t.join();
+        };
 
-        //TODO fix this memory leak
-        // var threads = std.ArrayList(std.Thread).init(
-        //     self.allocator,
-        // );
-        // defer threads.deinit();
-        // defer for (threads.items) |t| {
-        //     t.join();
-        // };
-
-        var run = true;
-        while (run) {
+        while (true) stop: {
             var fbs = std.io.fixedBufferStream(request_buffer);
             self.transport.in.streamUntilDelimiter(
                 fbs.writer(),
@@ -147,7 +146,7 @@ pub const Server = struct {
                 fbs.buffer.len,
             ) catch |err| switch (err) {
                 error.EndOfStream => {
-                    run = false;
+                    break :stop;
                 },
                 error.StreamTooLong => {
                     continue;
@@ -165,30 +164,21 @@ pub const Server = struct {
                     message,
                 ) catch |err| {
                     err catch {};
-                    try logger.err(message);
                     continue;
                 };
-                try logger.info(message);
                 defer requests.deinit();
-                try logger.info(requests.value);
                 if (requests.value.len == 0) continue;
-
-                const threads = try self.allocator.alloc(
-                    std.Thread,
-                    requests.value.len,
-                );
-                defer self.allocator.free(threads);
-                defer for (threads) |t| {
-                    t.join();
-                };
 
                 for (requests.value, 0..) |req, idx| {
                     const thread = try std.Thread.spawn(
                         .{},
                         processRequestInThread,
-                        .{ self, T, ctx, req },
+                        .{ self, req },
                     );
-                    threads[idx] = thread;
+                    // thread.join();
+                    try threads.append(thread);
+                    // _ = thread;
+                    _ = idx;
                 }
             }
         }
@@ -371,7 +361,7 @@ pub const Server = struct {
             )) {
                 const tool_args = req.params.object.get("arguments");
                 const input = if (tool_args) |val| val else .null;
-                if (tool.handle(arena.allocator(), input)) |val| {
+                if (tool.handle(tool.ctx, arena.allocator(), input)) |val| {
                     return .{
                         .arena = arena,
                         .value = switch (val) {
@@ -484,18 +474,12 @@ pub const Server = struct {
 
 pub fn processRequestInThread(
     self: *Server,
-    comptime T: type,
-    ctx: *const T,
     req: Request,
 ) anyerror!void {
-    const logger: Logger = ctx.*.logger;
     const resp = self.handleRequest(
         req,
-    ) catch |err| switch (err) {
-        else => |e| {
-            try logger.err(@errorName(e));
-            return e;
-        },
+    ) catch |err| {
+        return err;
     };
     if (resp == null) return;
     defer if (resp) |r| {

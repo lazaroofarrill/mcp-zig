@@ -50,12 +50,18 @@ pub fn main() !void {
     var mcp_server = try mcp.server.Server.init(main_allocator, transport);
     defer mcp_server.deinit();
 
+    var prng = std.Random.DefaultPrng.init(@intCast(std.time.milliTimestamp()));
+    const rand = prng.random();
+
     const Hello = struct {
         const Params = struct {
             name: []const u8,
         };
 
+        const Context = struct { rand: std.Random };
+
         fn handle(
+            ctx: *Context,
             allocator: std.mem.Allocator,
             params: Params,
         ) !mcp.json_rpc.Response {
@@ -79,7 +85,7 @@ pub fn main() !void {
             var result = std.json.ObjectMap.init(allocator);
             try result.put("content", .{ .array = content });
 
-            std.time.sleep(5 * std.time.ns_per_s);
+            std.time.sleep(ctx.rand.uintLessThan(u32, 5) * std.time.ns_per_s);
 
             return .{ .result = mcp.json_rpc.Result.create(.{
                 .object = result,
@@ -87,7 +93,13 @@ pub fn main() !void {
         }
     };
 
+    var context = Hello.Context{
+        .rand = rand,
+    };
+
     try mcp_server.defineTool(
+        Hello.Context,
+        &context,
         Hello.Params,
         "hello_world",
         "Check the params.\n",
@@ -99,12 +111,12 @@ pub fn main() !void {
         Hello.handle,
     );
 
-    const AppContext = struct {
-        logger: Logger,
-    };
+    // const AppContext = struct {
+    //     logger: Logger,
+    // };
 
-    const app_context: AppContext = .{
-        .logger = logger,
-    };
-    try mcp_server.start(AppContext, &app_context);
+    // const app_context: AppContext = .{
+    //     .logger = logger,
+    // };
+    try mcp_server.start();
 }
