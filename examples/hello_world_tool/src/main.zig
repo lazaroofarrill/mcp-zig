@@ -85,7 +85,14 @@ pub fn main() !void {
             var result = std.json.ObjectMap.init(allocator);
             try result.put("content", .{ .array = content });
 
-            std.time.sleep(ctx.rand.uintLessThan(u32, 5) * std.time.ns_per_s);
+            const time_to_sleep = ctx.rand.uintLessThan(
+                u32,
+                8,
+            ) * 100 * std.time.ns_per_ms;
+
+            try result.put("sleep_time", .{ .integer = time_to_sleep });
+
+            std.time.sleep(time_to_sleep);
 
             return .{ .result = mcp.json_rpc.Result.create(.{
                 .object = result,

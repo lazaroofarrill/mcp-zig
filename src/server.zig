@@ -130,6 +130,14 @@ pub const Server = struct {
         defer self.allocator.free(request_buffer);
 
         // TODO fix this memory leak
+        var requests = std.ArrayList(
+            Managed([]Request),
+        ).init(self.allocator);
+        defer requests.deinit();
+        defer for (requests.items) |r| {
+            r.deinit();
+        };
+
         var threads = std.ArrayList(std.Thread).init(
             self.allocator,
         );
@@ -138,7 +146,8 @@ pub const Server = struct {
             t.join();
         };
 
-        while (true) stop: {
+        var run = true;
+        while (run) {
             var fbs = std.io.fixedBufferStream(request_buffer);
             self.transport.in.streamUntilDelimiter(
                 fbs.writer(),
@@ -146,7 +155,7 @@ pub const Server = struct {
                 fbs.buffer.len,
             ) catch |err| switch (err) {
                 error.EndOfStream => {
-                    break :stop;
+                    run = false;
                 },
                 error.StreamTooLong => {
                     continue;
@@ -159,22 +168,24 @@ pub const Server = struct {
             const message = std.mem.trimRight(u8, raw_message, "\r");
 
             if (message.len > 0) {
-                const requests = jrpc.deserializeRequests(
+                const new_batch = jrpc.deserializeRequests(
                     self.allocator,
                     message,
                 ) catch |err| {
                     err catch {};
                     continue;
                 };
-                defer requests.deinit();
-                if (requests.value.len == 0) continue;
+                try requests.append(new_batch);
+                // defer new_batch.deinit();
+                if (new_batch.value.len == 0) continue;
 
-                for (requests.value, 0..) |req, idx| {
+                for (new_batch.value, 0..) |req, idx| {
                     const thread = try std.Thread.spawn(
                         .{},
                         processRequestInThread,
                         .{ self, req },
                     );
+                    // thread.detach();
                     // thread.join();
                     try threads.append(thread);
                     // _ = thread;
